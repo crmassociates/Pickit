@@ -27,9 +27,7 @@ namespace PickIt
         private Vector2 _clickWindowOffset;
         private WaitTime _workCoroutine;
         private uint coroutineCounter;
-        private Vector2 cursorBeforePickIt;
         private bool FullWork = true;
-        private Element LastLabelClick;
         private Coroutine pickItCoroutine;
 
         private WaitTime ToPick => new WaitTime(5);

@@ -110,11 +110,17 @@ namespace PickIt
         {
             if (!Input.GetKeyState(Settings.PickUpKey.Value) || !GameController.Window.IsForeground()) yield break;
             var window = GameController.Window.GetWindowRectangleTimeCache;
-            var rect = new RectangleF(window.X, window.X, window.X + window.Width, window.Y + window.Height);
+            var rect = new RectangleF(0, 0, window.Width, window.Height);
             var playerPos = GameController.Player.GridPos;
 
-            List<CustomItem> currentLabels;
+/*            var currentLabelsDebugging = GameController.Game.IngameState.IngameUi.ItemsOnGroundLabels.ToList();
+            currentLabelsDebugging = currentLabelsDebugging.Where(x => x.Address != 0).ToList();
+            currentLabelsDebugging = currentLabelsDebugging.Where(x => x.ItemOnGround?.Path != null).ToList();
+            currentLabelsDebugging = currentLabelsDebugging.Where(x => x.IsVisible).ToList();
+            currentLabelsDebugging = currentLabelsDebugging.Where(x => x.Label.GetClientRectCache.Center.PointInRectangle(rect)).ToList();
+            currentLabelsDebugging = currentLabelsDebugging.Where(x => x.CanPickUp || x.MaxTimeForPickUp.TotalSeconds <= 0).ToList();*/
 
+            List<CustomItem> currentLabels;
             currentLabels = GameController.Game.IngameState.IngameUi.ItemsOnGroundLabels
                 .Where(x => x.Address != 0 &&
                             x.ItemOnGround?.Path != null &&

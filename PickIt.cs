@@ -5,6 +5,8 @@ using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared;
 using ExileCore.Shared.Enums;
 using ExileCore.Shared.Helpers;
+using ImGuiNET;
+using Random_Features.Libs;
 using SharpDX;
 using System;
 using System.Collections;
@@ -12,8 +14,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Windows.Forms;
+using Newtonsoft.Json;
 using Input = ExileCore.Input;
 
 namespace PickIt
@@ -25,7 +27,9 @@ namespace PickIt
         private readonly Stopwatch _pickUpTimer = Stopwatch.StartNew();
         private readonly Stopwatch DebugTimer = Stopwatch.StartNew();
         private readonly WaitTime toPick = new WaitTime(1);
-        private readonly WaitTime wait3ms = new WaitTime(1);
+        private readonly WaitTime wait1ms = new WaitTime(1);
+        private readonly WaitTime wait2ms = new WaitTime(2);
+        private readonly WaitTime wait3ms = new WaitTime(3);
         private readonly WaitTime waitForNextTry = new WaitTime(1);
         private Vector2 _clickWindowOffset;
         private HashSet<string> _magicRules;
@@ -48,21 +52,21 @@ namespace PickIt
         private WaitTime tryToPick = new WaitTime(7);
         public string UniqueRuleFile;
         private WaitTime waitPlayerMove = new WaitTime(10);
+        private List<string> _customItems = new List<string>();
+
+
+        public FRSetManagerPublishInformation FullRareSetManagerData = new FRSetManagerPublishInformation();
 
         public PickIt()
         {
             Name = "Pickit";
         }
 
-        //https://stackoverflow.com/questions/826777/how-to-have-an-auto-incrementing-version-number-visual-studio
-        public Version Version { get; } = Assembly.GetExecutingAssembly().GetName().Version;
         public string PluginVersion { get; set; }
         private List<string> PickitFiles { get; set; }
 
         public override bool Initialise()
         {
-            buildDate = new DateTime(2000, 1, 1).AddDays(Version.Build).AddSeconds(Version.Revision * 2);
-            PluginVersion = $"{Version}";
             pickItCoroutine = new Coroutine(MainWorkCoroutine(), this, "Pick It");
             Core.ParallelRunner.Run(pickItCoroutine);
             pickItCoroutine.Pause();
@@ -71,7 +75,20 @@ namespace PickIt
             _workCoroutine = new WaitTime(Settings.ExtraDelay);
             Settings.ExtraDelay.OnValueChanged += (sender, i) => _workCoroutine = new WaitTime(i);
             LoadRuleFiles();
+            //LoadCustomItems();
             return true;
+        }
+
+        // bad idea to add hard coded pickups.
+        private void LoadCustomItems()
+        {
+            _customItems.Add("Treasure Key");
+            _customItems.Add("Silver Key");
+            _customItems.Add("Golden Key");
+            _customItems.Add("Flashpowder Keg");
+            _customItems.Add("Divine Life Flask");
+            _customItems.Add("Quicksilver Flask");
+            _customItems.Add("Stone of Passage");
         }
 
         private IEnumerator MainWorkCoroutine()
@@ -86,11 +103,9 @@ namespace PickIt
             }
         }
 
-        /*public override void DrawSettings()
+        public override void DrawSettings()
         {
-            ImGui.BulletText($"v{PluginVersion}");
-            ImGui.BulletText($"Last Updated: {buildDate}");
-            Settings.PickUpKey = ImGuiExtension.HotkeySelector("Pickup Key", Settings.PickUpKey);
+            Settings.PickUpKey = ImGuiExtension.HotkeySelector("Pickup Key: " + Settings.PickUpKey.Value.ToString(), Settings.PickUpKey);
             Settings.LeftClickToggleNode.Value = ImGuiExtension.Checkbox("Mouse Button: " + (Settings.LeftClickToggleNode ? "Left" : "Right"), Settings.LeftClickToggleNode);
             Settings.LeftClickToggleNode.Value = ImGuiExtension.Checkbox("Return Mouse To Position Before Click", Settings.ReturnMouseToBeforeClickPosition);
             Settings.GroundChests.Value = ImGuiExtension.Checkbox("Click Chests If No Items Around", Settings.GroundChests);
@@ -101,9 +116,11 @@ namespace PickIt
             Settings.TimeBeforeNewClick.Value = ImGuiExtension.IntSlider("Time wait for new click", Settings.TimeBeforeNewClick);
             //Settings.OverrideItemPickup.Value = ImGuiExtension.Checkbox("Item Pickup Override", Settings.OverrideItemPickup); ImGui.SameLine();
             //ImGuiExtension.ToolTip("Override item.CanPickup\n\rDO NOT enable this unless you know what you're doing!");
+            Settings.LazyLooting.Value = ImGuiExtension.Checkbox("Use Lazy Looting", Settings.LazyLooting);
+            Settings.LazyLootingPauseKey.Value = ImGuiExtension.HotkeySelector("Pause lazy looting for 2 sec: " + Settings.LazyLootingPauseKey.Value, Settings.LazyLootingPauseKey);
             
             var tempRef = false;
-            if (ImGui.CollapsingHeader("Pickit Rules", TreeNodeFlags.Framed | TreeNodeFlags.DefaultOpen))
+            if (ImGui.CollapsingHeader("Pickit Rules", ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.DefaultOpen))
             {
                 if (ImGui.Button("Reload All Files")) LoadRuleFiles();
                 Settings.NormalRuleFile = ImGuiExtension.ComboBox("Normal Rules", Settings.NormalRuleFile, PickitFiles, out tempRef);
@@ -114,16 +131,34 @@ namespace PickIt
                 if (tempRef) _rareRules = LoadPickit(Settings.RareRuleFile);
                 Settings.UniqueRuleFile = ImGuiExtension.ComboBox("Unique Rules", Settings.UniqueRuleFile, PickitFiles, out tempRef);
                 if (tempRef) _uniqueRules = LoadPickit(Settings.UniqueRuleFile);
+                Settings.WeightRuleFile = ImGuiExtension.ComboBox("Weight Rules", Settings.WeightRuleFile, PickitFiles, out tempRef);
+                if (tempRef) _weightsRules = LoadWeights(Settings.WeightRuleFile);
             }
 
-            if (ImGui.CollapsingHeader("Item Logic", TreeNodeFlags.Framed | TreeNodeFlags.DefaultOpen))
+            if (ImGui.CollapsingHeader("Item Logic", ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.DefaultOpen))
             {
-                Settings.ShaperItems.Value = ImGuiExtension.Checkbox("Pickup Shaper Items", Settings.ShaperItems);
-                ImGui.SameLine();
-                Settings.ElderItems.Value = ImGuiExtension.Checkbox("Pickup Elder Items", Settings.ElderItems);
+                if (ImGui.TreeNode("Influence Types"))
+                {
+                    Settings.ShaperItems.Value = ImGuiExtension.Checkbox("Shaper Items", Settings.ShaperItems);
+                    Settings.ElderItems.Value = ImGuiExtension.Checkbox("Elder Items", Settings.ElderItems);
+                    Settings.HunterItems.Value = ImGuiExtension.Checkbox("Hunter Items", Settings.HunterItems);
+                    Settings.CrusaderItems.Value = ImGuiExtension.Checkbox("Crusader Items", Settings.CrusaderItems);
+                    Settings.WarlordItems.Value = ImGuiExtension.Checkbox("Warlord Items", Settings.WarlordItems);
+                    Settings.RedeemerItems.Value = ImGuiExtension.Checkbox("Redeemer Items", Settings.RedeemerItems);
+                    Settings.FracturedItems.Value = ImGuiExtension.Checkbox("Fractured Items", Settings.FracturedItems);
+                    Settings.VeiledItems.Value = ImGuiExtension.Checkbox("Veiled Items", Settings.VeiledItems);
+                    ImGui.Spacing();
+                    ImGui.TreePop();
+                }
+
                 if (ImGui.TreeNode("Links/Sockets/RGB"))
                 {
                     Settings.RGB.Value = ImGuiExtension.Checkbox("RGB Items", Settings.RGB);
+                    Settings.RGBWidth.Value = ImGuiExtension.IntSlider("Maximum Width##RGBWidth", Settings.RGBWidth);
+                    Settings.RGBHeight.Value = ImGuiExtension.IntSlider("Maximum Height##RGBHeight", Settings.RGBHeight);
+                    ImGui.Spacing();
+                    ImGui.Spacing();
+                    ImGui.Spacing();
                     Settings.TotalSockets.Value = ImGuiExtension.IntSlider("##Sockets", Settings.TotalSockets);
                     ImGui.SameLine();
                     Settings.Sockets.Value = ImGuiExtension.Checkbox("Sockets", Settings.Sockets);
@@ -136,6 +171,8 @@ namespace PickIt
 
                 if (ImGui.TreeNode("Overrides"))
                 {
+                    Settings.UseWeight.Value = ImGuiExtension.Checkbox("Use Weight", Settings.UseWeight);
+                    Settings.IgnoreScrollOfWisdom.Value = ImGuiExtension.Checkbox("Ignore Scroll Of Wisdom", Settings.IgnoreScrollOfWisdom);
                     Settings.PickUpEverything.Value = ImGuiExtension.Checkbox("Pickup Everything", Settings.PickUpEverything);
                     Settings.AllDivs.Value = ImGuiExtension.Checkbox("All Divination Cards", Settings.AllDivs);
                     Settings.AllCurrency.Value = ImGuiExtension.Checkbox("All Currency", Settings.AllCurrency);
@@ -155,9 +192,14 @@ namespace PickIt
                     Settings.GemQuality.Value = ImGuiExtension.IntSlider("##Gems", "Lowest Quality", Settings.GemQuality);
                     ImGui.SameLine();
                     Settings.Gems.Value = ImGuiExtension.Checkbox("Gems", Settings.Gems);
+
+                    Settings.FlasksQuality.Value = ImGuiExtension.IntSlider("##Flasks", "Lowest Quality", Settings.FlasksQuality);
+                    ImGui.SameLine();
+                    Settings.Flasks.Value = ImGuiExtension.Checkbox("Flasks", Settings.Flasks);
                     ImGui.Separator();
                     ImGui.TreePop();
                 }
+                Settings.HeistItems.Value = ImGuiExtension.Checkbox("Heist Items", Settings.HeistItems);
 
                 Settings.Rares.Value = ImGuiExtension.Checkbox("##Rares", Settings.Rares);
                 ImGui.SameLine();
@@ -186,25 +228,55 @@ namespace PickIt
                     ImGui.SameLine();
                     Settings.RareArmour.Value = ImGuiExtension.Checkbox("Armours", Settings.RareArmour);
                     ImGui.Spacing();
+                    ImGui.Spacing();
+                    ImGui.Spacing();
+                    Settings.RareShieldilvl.Value = ImGuiExtension.IntSlider("##Shields", "Lowest iLvl", Settings.RareShieldilvl);
+                    ImGui.SameLine();
+                    Settings.RareShield.Value = ImGuiExtension.Checkbox("Shields", Settings.RareShield);
+                    Settings.RareShieldWidth.Value = ImGuiExtension.IntSlider("Maximum Width##RareShieldWidth", Settings.RareShieldWidth);
+                    Settings.RareShieldHeight.Value = ImGuiExtension.IntSlider("Maximum Height##RareShieldHeight", Settings.RareShieldHeight);
+                    ImGui.Spacing();
+                    ImGui.Spacing();
+                    ImGui.Spacing();
                     Settings.RareWeaponilvl.Value = ImGuiExtension.IntSlider("##RareWeapons", "Lowest iLvl", Settings.RareWeaponilvl);
                     ImGui.SameLine();
                     Settings.RareWeapon.Value = ImGuiExtension.Checkbox("Weapons", Settings.RareWeapon);
-                    Settings.RareShieldilvl.Value = ImGuiExtension.IntSlider("##Shields", "Lowest iLvl", Settings.RareWeaponilvl);
-                    ImGui.SameLine();
-                    Settings.RareShield.Value = ImGuiExtension.Checkbox("Shields", Settings.RareWeapon);
                     Settings.RareWeaponWidth.Value = ImGuiExtension.IntSlider("Maximum Width##RareWeaponWidth", Settings.RareWeaponWidth);
                     Settings.RareWeaponHeight.Value = ImGuiExtension.IntSlider("Maximum Height##RareWeaponHeight", Settings.RareWeaponHeight);
-                    Settings.ItemCells.Value = ImGuiExtension.IntSlider("Maximum Cells##RareWeaponCell", Settings.ItemCells);
+                    if (ImGui.TreeNode("Full Rare Set Manager Integration##FRSMI"))
+                    {
+                        Settings.FullRareSetManagerOverride.Value = ImGuiExtension.Checkbox("Override Rare Pickup with Full Rare Set Managers' needed pieces", Settings.FullRareSetManagerOverride);
+
+                        Settings.FullRareSetManagerOverrideAllowIdentifiedItems.Value = ImGuiExtension.Checkbox("Pickup Identified items?", Settings.FullRareSetManagerOverrideAllowIdentifiedItems);
+                        ImGui.Spacing();
+                        ImGui.Spacing();
+                        ImGui.BulletText("Set the number you wish to pickup for Full Rare Set Manager overrides\nDefault: -1\n-1 will disable these overrides");
+                        ImGui.Spacing();
+                        Settings.FullRareSetManagerPickupOverrides.Weapons = ImGuiExtension.IntSlider("Max Weapons(s)##FRSMOverrides1", Settings.FullRareSetManagerPickupOverrides.Weapons, -1, 100);
+                        Settings.FullRareSetManagerPickupOverrides.Helmets = ImGuiExtension.IntSlider("Max Helmets##FRSMOverrides2", Settings.FullRareSetManagerPickupOverrides.Helmets, -1, 100);
+                        Settings.FullRareSetManagerPickupOverrides.BodyArmors = ImGuiExtension.IntSlider("Max Body Armors##FRSMOverrides3", Settings.FullRareSetManagerPickupOverrides.BodyArmors, -1, 100);
+                        Settings.FullRareSetManagerPickupOverrides.Gloves = ImGuiExtension.IntSlider("Max Gloves##FRSMOverrides4", Settings.FullRareSetManagerPickupOverrides.Gloves, -1, 100);
+                        Settings.FullRareSetManagerPickupOverrides.Boots = ImGuiExtension.IntSlider("Max Boots##FRSMOverrides5", Settings.FullRareSetManagerPickupOverrides.Boots, -1, 100);
+                        Settings.FullRareSetManagerPickupOverrides.Belts = ImGuiExtension.IntSlider("Max Belts##FRSMOverrides6", Settings.FullRareSetManagerPickupOverrides.Belts, -1, 100);
+                        Settings.FullRareSetManagerPickupOverrides.Amulets = ImGuiExtension.IntSlider("Max Amulets##FRSMOverrides7", Settings.FullRareSetManagerPickupOverrides.Amulets, -1, 100);
+                        Settings.FullRareSetManagerPickupOverrides.Rings = ImGuiExtension.IntSlider("Max Ring Sets##FRSMOverrides8", Settings.FullRareSetManagerPickupOverrides.Rings, -1, 100);
+                        ImGui.TreePop();
+                    }
                     ImGui.TreePop();
+
                 }
             }
-        }*/
+        }
+
+        private DateTime DisableLazyLootingTill { get; set; }
 
         public override Job Tick()
         {
+            if (Input.GetKeyState(Settings.LazyLootingPauseKey)) DisableLazyLootingTill = DateTime.Now.AddSeconds(2);
             if (Input.GetKeyState(Keys.Escape)) pickItCoroutine.Pause();
 
-            if (Input.GetKeyState(Settings.PickUpKey.Value))
+            if (Input.GetKeyState(Settings.PickUpKey.Value) ||
+                CanLazyLoot())
             {
                 DebugTimer.Restart();
 
@@ -228,19 +300,24 @@ namespace PickIt
                 }
             }
 
-            if (DebugTimer.ElapsedMilliseconds > 2000)
+            if (DebugTimer.ElapsedMilliseconds > 300)
             {
                 FullWork = true;
-                LogMessage("Error pick it stop after time limit 2000 ms", 1);
+                //LogMessage("Error pick it stop after time limit 300 ms", 1);
                 DebugTimer.Reset();
             }
+            //Graphics.DrawText($@"PICKIT :: Debug Tick Timer ({DebugTimer.ElapsedMilliseconds}ms)", new Vector2(100, 100), FontAlign.Left);
+            //DebugTimer.Reset();
 
             return null;
         }
 
         public bool InCustomList(HashSet<string> checkList, CustomItem itemEntity, ItemRarity rarity)
         {
-            if (checkList.Contains(itemEntity.BaseName) && itemEntity.Rarity == rarity) return true;
+            if (checkList.Contains(itemEntity.BaseName) && itemEntity.Rarity == rarity)
+                return true;
+            if (checkList.Contains(itemEntity.ClassName) && itemEntity.Rarity == rarity)
+                return true;
             return false;
         }
 
@@ -280,27 +357,91 @@ namespace PickIt
 
                 #endregion
 
+
+                if (Settings.HeistItems)
+                {
+                    if (item.IsHeist)
+                        return true;
+                }
+
+                #region Influenced
+
+                if (Settings.HunterItems)
+                {
+                    if (item.IsHunter)
+                        return true;
+                }
+
+                if (Settings.RedeemerItems)
+                {
+                    if (item.IsRedeemer)
+                        return true;
+                }
+
+                if (Settings.CrusaderItems)
+                {
+                    if (item.IsCrusader)
+                        return true;
+                }
+
+                if (Settings.WarlordItems)
+                {
+                    if (item.IsWarlord)
+                        return true;
+                }
+
+                if (Settings.VeiledItems)
+                {
+                    if (item.IsVeiled)
+                        return true;
+                }
+
+                #endregion
+
                 #region Rare Overrides
 
                 if (Settings.Rares && item.Rarity == ItemRarity.Rare)
                 {
+
+                    if (Settings.FullRareSetManagerOverride.Value && item.ItemLevel >= 60 && item.ItemLevel <= 74)
+                    {
+                        var setData = FullRareSetManagerData;
+                        var maxSetWanted = setData.WantedSets;
+                        var maxPickupOverides = Settings.FullRareSetManagerPickupOverrides;
+
+                        if (item.IsIdentified && !Settings.FullRareSetManagerOverrideAllowIdentifiedItems.Value)
+                            return false;
+
+                        if (Settings.RareRings && item.ClassName == "Ring" && setData.GatheredRings < (maxPickupOverides.Rings > -1 ? maxPickupOverides.Rings : maxSetWanted)) return true;
+                        if (Settings.RareAmulets && item.ClassName == "Amulet" && setData.GatheredAmulets < (maxPickupOverides.Amulets > -1 ? maxPickupOverides.Amulets : maxSetWanted)) return true;
+                        if (Settings.RareBelts && item.ClassName == "Belt" && setData.GatheredBelts < (maxPickupOverides.Belts > -1 ? maxPickupOverides.Belts : maxSetWanted)) return true;
+                        if (Settings.RareGloves && item.ClassName == "Gloves" && setData.GatheredGloves < (maxPickupOverides.Gloves > -1 ? maxPickupOverides.Gloves : maxSetWanted)) return true;
+                        if (Settings.RareBoots && item.ClassName == "Boots" && setData.GatheredBoots < (maxPickupOverides.Boots > -1 ? maxPickupOverides.Boots : maxSetWanted)) return true;
+                        if (Settings.RareHelmets && item.ClassName == "Helmet" && setData.GatheredHelmets < (maxPickupOverides.Helmets > -1 ? maxPickupOverides.Helmets : maxSetWanted)) return true;
+                        if (Settings.RareArmour && item.ClassName == "Body Armour" && setData.GatheredBodyArmors < (maxPickupOverides.BodyArmors > -1 ? maxPickupOverides.BodyArmors : maxSetWanted)) return true;
+                        if (Settings.RareWeapon && item.IsWeapon && setData.GatheredWeapons < (maxPickupOverides.Weapons > -1 ? maxPickupOverides.Weapons : maxSetWanted))
+                            if (item.Width <= Settings.RareWeaponWidth && item.Height <= Settings.RareWeaponHeight) return true;
+
+                    }
+                    else  
+                    {
+                        if (Settings.RareRings && item.ClassName == "Ring" && item.ItemLevel >= Settings.RareRingsilvl) return true;
+                        if (Settings.RareAmulets && item.ClassName == "Amulet" && item.ItemLevel >= Settings.RareAmuletsilvl) return true;
+                        if (Settings.RareBelts && item.ClassName == "Belt" && item.ItemLevel >= Settings.RareBeltsilvl) return true;
+                        if (Settings.RareGloves && item.ClassName == "Gloves" && item.ItemLevel >= Settings.RareGlovesilvl) return true;
+                        if (Settings.RareBoots && item.ClassName == "Boots" && item.ItemLevel >= Settings.RareBootsilvl) return true;
+                        if (Settings.RareHelmets && item.ClassName == "Helmet" && item.ItemLevel >= Settings.RareHelmetsilvl) return true;
+                        if (Settings.RareArmour && item.ClassName == "Body Armour" && item.ItemLevel >= Settings.RareArmourilvl) return true;
+
+                        if (Settings.RareWeapon && item.IsWeapon && item.ItemLevel >= Settings.RareWeaponilvl)
+                            if (item.Width <= Settings.RareWeaponWidth && item.Height <= Settings.RareWeaponHeight) return true;
+                    }
+
+                    if (Settings.RareShield && item.ClassName == "Shield" && item.ItemLevel >= Settings.RareShieldilvl)
+                        if (item.Width <= Settings.RareShieldWidth && item.Height <= Settings.RareShieldHeight)
+                            return true;
+
                     if (Settings.RareJewels && (item.ClassName == "Jewel" || item.ClassName == "AbyssJewel")) return true;
-                    if (Settings.RareRings && item.ClassName == "Ring" && item.ItemLevel >= Settings.RareRingsilvl) return true;
-                    if (Settings.RareAmulets && item.ClassName == "Amulet" && item.ItemLevel >= Settings.RareAmuletsilvl) return true;
-                    if (Settings.RareBelts && item.ClassName == "Belt" && item.ItemLevel >= Settings.RareBeltsilvl) return true;
-                    if (Settings.RareGloves && item.ClassName == "Gloves" && item.ItemLevel >= Settings.RareGlovesilvl) return true;
-                    if (Settings.RareBoots && item.ClassName == "Boots" && item.ItemLevel >= Settings.RareBootsilvl) return true;
-                    if (Settings.RareHelmets && item.ClassName == "Helmet" && item.ItemLevel >= Settings.RareHelmetsilvl) return true;
-                    if (Settings.RareArmour && item.ClassName == "Body Armour" && item.ItemLevel >= Settings.RareArmourilvl) return true;
-
-                    if (Settings.RareWeapon && item.IsWeapon && item.ItemLevel >= Settings.RareWeaponilvl &&
-                        item.Width * item.Height <= Settings.ItemCells) return true;
-
-                    if (Settings.RareWeapon && item.IsWeapon && item.ItemLevel >= Settings.RareWeaponilvl &&
-                        item.Width <= Settings.RareWeaponWidth && item.Height <= Settings.RareWeaponHeight) return true;
-
-                    if (Settings.RareShield && item.ClassName == "Shield" && item.ItemLevel >= Settings.RareShieldilvl &&
-                        item.Width * item.Height <= Settings.ItemCells) return true;
                 }
 
                 #endregion
@@ -309,7 +450,7 @@ namespace PickIt
 
                 if (Settings.Sockets && item.Sockets >= Settings.TotalSockets.Value) return true;
                 if (Settings.Links && item.LargestLink >= Settings.LargestLink) return true;
-                if (Settings.RGB && item.IsRGB) return true;
+                if (Settings.RGB && item.IsRGB && item.Width <= Settings.RGBWidth && item.Height <= Settings.RGBHeight) return true;
 
                 #endregion
 
@@ -333,9 +474,10 @@ namespace PickIt
 
                 #endregion
 
-                #region Skill Gems
+                #region Qualiity Rules
 
                 if (Settings.Gems && item.Quality >= Settings.GemQuality.Value && item.ClassName.Contains("Skill Gem")) return true;
+                if (Settings.Flasks && item.Quality >= Settings.FlasksQuality.Value && item.ClassName.Contains("Flask")) return true;
 
                 #endregion
 
@@ -343,6 +485,19 @@ namespace PickIt
 
                 if (Settings.AllUniques && item.Rarity == ItemRarity.Unique) return true;
 
+                #endregion
+
+                #region Custom Rules
+                if (item.BaseName.Contains("Watchstone"))
+                    return true;
+                if (item.BaseName.Contains("Incubator"))
+                    return true;
+                if (item.BaseName.Contains(" Seed"))
+                    return true;
+                if (item.BaseName.Contains(" Grain"))
+                    return true;
+                if (item.BaseName.Contains(" Bulb"))
+                    return true;
                 #endregion
             }
             catch (Exception e)
@@ -419,21 +574,32 @@ namespace PickIt
 
             #endregion
 
-            #region Metamorph edit
+            #region Metamorph
 
             if (itemEntity.IsMetaItem)
             {
                 pickItemUp = true;
             }
 
-            #endregion 
+            #endregion
 
             return pickItemUp;
+        }
+        public override void ReceiveEvent(string eventId, object args)
+        {
+            if (!Settings.Enable.Value) return;
+
+            if (eventId == "frsm_display_data")
+            {
+
+                var argSerialised = JsonConvert.SerializeObject(args);
+                FullRareSetManagerData = JsonConvert.DeserializeObject<FRSetManagerPublishInformation>(argSerialised);
+            }
         }
 
         private IEnumerator FindItemToPick()
         {
-            if (!Input.GetKeyState(Settings.PickUpKey.Value) || !GameController.Window.IsForeground()) yield break;
+            if (!GameController.Window.IsForeground()) yield break;
             var window = GameController.Window.GetWindowRectangleTimeCache;
             var rect = new RectangleF(0, 0, window.X + window.Width, window.Y + window.Height);
             var playerPos = GameController.Player.GridPos;
@@ -447,7 +613,7 @@ namespace PickIt
                     .Where(x => x.Address != 0 &&
                                 x.ItemOnGround?.Path != null &&
                                 x.IsVisible && x.Label.GetClientRectCache.Center.PointInRectangle(rect) &&
-                                (x.CanPickUp || x.MaxTimeForPickUp.TotalSeconds <= 0) || x.ItemOnGround?.Path == morphPath)
+                                x.CanPickUp && (x.MaxTimeForPickUp.TotalSeconds <= 0) || x.ItemOnGround?.Path == morphPath)
                     .Select(x => new CustomItem(x, GameController.Files,
                         x.ItemOnGround.DistancePlayer, _weightsRules, x.ItemOnGround?.Path == morphPath))
                     .OrderByDescending(x => x.Weight).ThenBy(x => x.Distance).ToList();
@@ -458,16 +624,58 @@ namespace PickIt
                     .Where(x => x.Address != 0 &&
                                 x.ItemOnGround?.Path != null &&
                                 x.IsVisible && x.Label.GetClientRectCache.Center.PointInRectangle(rect) &&
-                                (x.CanPickUp || x.MaxTimeForPickUp.TotalSeconds <= 0) || x.ItemOnGround?.Path == morphPath)
+                                x.CanPickUp && (x.MaxTimeForPickUp.TotalSeconds <= 0) || x.ItemOnGround?.Path == morphPath)
                     .Select(x => new CustomItem(x, GameController.Files,
                         x.ItemOnGround.DistancePlayer, _weightsRules, x.ItemOnGround?.Path == morphPath))
                     .OrderBy(x => x.Distance).ToList();
             }
 
             GameController.Debug["PickIt"] = currentLabels;
-            var pickUpThisItem = currentLabels.FirstOrDefault(x => DoWePickThis(x) && x.Distance < Settings.PickupRange);
-            if (pickUpThisItem.IsMetaItem ? pickUpThisItem?.WorldIcon != null : pickUpThisItem?.GroundItem != null) yield return TryToPickV2(pickUpThisItem);
-            FullWork = true;
+            var rectangleOfGameWindow = GameController.Window.GetWindowRectangleTimeCache;
+            rectangleOfGameWindow.Inflate(-36, -36);
+            var pickUpThisItem = currentLabels.FirstOrDefault(x => DoWePickThis(x) && x.Distance < Settings.PickupRange && x.GroundItem != null && rectangleOfGameWindow.Intersects(new RectangleF(x.LabelOnGround.Label.GetClientRectCache.Center.X, x.LabelOnGround.Label.GetClientRectCache.Center.Y, 3, 3)));
+            
+            if (Input.GetKeyState(Settings.PickUpKey.Value) ||
+                CanLazyLoot() && ShouldLazyLoot(pickUpThisItem))
+            {
+                yield return TryToPickV2(pickUpThisItem);
+                FullWork = true;
+            }
+        }
+        
+        /// <summary>
+        /// LazyLoot item independent checks
+        /// </summary>
+        /// <returns></returns>
+        private bool CanLazyLoot()
+        {
+            if (!Settings.LazyLooting) return false;
+            if (DisableLazyLootingTill > DateTime.Now) return false;
+            
+            return true;
+        }
+        
+        /// <summary>
+        /// LazyLoot item dependent checks
+        /// </summary>
+        /// <param name="item"></param>
+        /// <returns></returns>
+        private bool ShouldLazyLoot(CustomItem item)
+        {
+            var itemPos = item.LabelOnGround.ItemOnGround.Pos;
+            var playerPos = GameController.Player.Pos;
+            if (Math.Abs(itemPos.Z - playerPos.Z) > 50) return false;
+            var dx = itemPos.X - playerPos.X;
+            var dy = itemPos.Y - playerPos.Y;
+            if (dx * dx + dy * dy > 275 * 275) return false;
+
+            if (item.IsElder || item.IsFractured || item.IsShaper ||
+                item.IsHunter || item.IsCrusader || item.IsRedeemer || item.IsWarlord || item.IsHeist)
+                return true;
+            
+            if (item.Rarity == ItemRarity.Rare && item.Width * item.Height > 1) return false;
+            
+            return true;
         }
 
         private IEnumerator TryToPickV2(CustomItem pickItItem)
@@ -475,18 +683,18 @@ namespace PickIt
             if (!pickItItem.IsValid)
             {
                 FullWork = true;
-                LogMessage("PickItem is not valid.", 5, Color.Red);
+                //LogMessage("PickItem is not valid.", 5, Color.Red);
                 yield break;
             }
 
             var centerOfItemLabel = pickItItem.LabelOnGround.Label.GetClientRectCache.Center;
             var rectangleOfGameWindow = GameController.Window.GetWindowRectangleTimeCache;
+
             var oldMousePosition = Mouse.GetCursorPositionVector();
             _clickWindowOffset = rectangleOfGameWindow.TopLeft;
-            rectangleOfGameWindow.Inflate(-55, -55);
+            rectangleOfGameWindow.Inflate(-36, -36);
             centerOfItemLabel.X += rectangleOfGameWindow.Left;
             centerOfItemLabel.Y += rectangleOfGameWindow.Top;
-
             if (!rectangleOfGameWindow.Intersects(new RectangleF(centerOfItemLabel.X, centerOfItemLabel.Y, 3, 3)))
             {
                 FullWork = true;
@@ -496,7 +704,7 @@ namespace PickIt
 
             var tryCount = 0;
 
-            while (!pickItItem.IsTargeted() && tryCount < 5)
+            while (tryCount < 3)
             {
                 var completeItemLabel = pickItItem.LabelOnGround?.Label;
 
@@ -504,35 +712,40 @@ namespace PickIt
                 {
                     if (tryCount > 0)
                     {
-                        LogMessage("Probably item already picked.", 3);
+                        //LogMessage("Probably item already picked.", 3);
                         yield break;
                     }
 
-                    LogError("Label for item not found.", 5);
+                    //LogError("Label for item not found.", 5);
                     yield break;
                 }
 
-                /*while (GameController.Player.GetComponent<Actor>().isMoving)
-                {
-                    yield return waitPlayerMove;
-                }*/
+                //while (GameController.Player.GetComponent<Actor>().isMoving)
+                //{
+                //    yield return waitPlayerMove;
+                //}
                 var clientRect = completeItemLabel.GetClientRect();
 
                 var clientRectCenter = clientRect.Center;
 
                 var vector2 = clientRectCenter + _clickWindowOffset;
 
+                if (!rectangleOfGameWindow.Intersects(new RectangleF(vector2.X, vector2.Y, 3, 3)))
+                {
+                    FullWork = true;
+                    //LogMessage($"x,y outside game window. Label: {centerOfItemLabel} Window: {rectangleOfGameWindow}", 5, Color.Red);
+                    yield break;
+                }
+
                 Mouse.MoveCursorToPosition(vector2);
-                yield return wait3ms;
-                Mouse.MoveCursorToPosition(vector2);
-                yield return wait3ms;
-                yield return Mouse.LeftClick();
+                yield return wait2ms;
+
+                if (pickItItem.IsTargeted())
+                    yield return Mouse.LeftClick();
+
                 yield return toPick;
                 tryCount++;
             }
-
-            if (pickItItem.IsTargeted())
-                Input.Click(MouseButtons.Left);
 
             tryCount = 0;
 
@@ -540,7 +753,7 @@ namespace PickIt
                        x => x.Address == pickItItem.LabelOnGround.Address) != null && tryCount < 6)
             {
                 tryCount++;
-                yield return waitForNextTry;
+                //yield return waitForNextTry;
             }
 
             //yield return waitForNextTry;
@@ -569,7 +782,7 @@ namespace PickIt
             _magicRules = LoadPickit(Settings.MagicRuleFile);
             _rareRules = LoadPickit(Settings.RareRuleFile);
             _uniqueRules = LoadPickit(Settings.UniqueRuleFile);
-            _weightsRules = LoadWeights("Weights");
+            _weightsRules = LoadWeights(Settings.WeightRuleFile);
         }
 
         public HashSet<string> LoadPickit(string fileName)
@@ -622,6 +835,7 @@ namespace PickIt
                 }
             }
 
+            LogMessage($"PICKIT :: (Re)Loaded {fileName}", 5, Color.Cyan);
             return result;
         }
 
